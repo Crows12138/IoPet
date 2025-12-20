@@ -1,0 +1,14 @@
+# Io Pet - Desktop Companion
+# Core dependencies
+PyQt6>=6.4.0
+requests>=2.28.0
+pywin32>=305
+psutil>=5.9.0
+
+# Voice (optional but recommended)
+sounddevice>=0.4.6
+soundfile>=0.12.0
+numpy>=1.24.0
+faster-whisper>=0.10.0
+pyttsx3>=2.90
+edge-tts>=6.1.0
