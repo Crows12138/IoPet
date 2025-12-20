@@ -22,9 +22,15 @@ import os
 import math
 import threading
 import requests
-import win32gui
-import win32process
 import psutil
+
+# 跨平台：Windows 窗口 API（Linux 上降级）
+if sys.platform == 'win32':
+    import win32gui
+    import win32process
+    HAS_WIN32 = True
+else:
+    HAS_WIN32 = False
 
 # Voice module (optional)
 try:
@@ -500,7 +506,11 @@ class IoPet(QWidget):
         self.update()  # Trigger repaint
 
     def _update_activity(self):
-        """Track current active window"""
+        """Track current active window (跨平台)"""
+        if not HAS_WIN32:
+            # Linux: 暂不支持窗口追踪，留空
+            return
+
         try:
             hwnd = win32gui.GetForegroundWindow()
             if hwnd:
