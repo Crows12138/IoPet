@@ -23,14 +23,23 @@ import math
 import threading
 import requests
 import psutil
+import json
+from datetime import datetime
 
-# 跨平台：Windows 窗口 API（Linux 上降级）
+# 跨平台：Windows 窗口 API / Linux xdotool
 if sys.platform == 'win32':
     import win32gui
     import win32process
     HAS_WIN32 = True
+    HAS_LINUX = False
+elif sys.platform == 'linux':
+    import subprocess
+    import shutil
+    HAS_WIN32 = False
+    HAS_LINUX = shutil.which('xdotool') is not None
 else:
     HAS_WIN32 = False
+    HAS_LINUX = False
 
 # Voice module (optional)
 try:
@@ -38,12 +47,144 @@ try:
     HAS_VOICE = True
 except ImportError:
     HAS_VOICE = False
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QTextEdit,
-    QVBoxLayout, QHBoxLayout, QPushButton, QMenu
+    QVBoxLayout, QHBoxLayout, QPushButton, QMenu, QDialog,
+    QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal, QPoint
-from PyQt6.QtGui import QPainter, QColor, QRadialGradient, QFont
+from PyQt5.QtCore import Qt, QTimer, QPointF, pyqtSignal, QPoint
+from PyQt5.QtGui import QPainter, QColor, QRadialGradient, QFont
+
+# 历史记录文件路径
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.json")
+
+
+def load_history():
+    """加载聊天历史"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+
+def save_history(history):
+    """保存聊天历史"""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+
+class HistoryWindow(QDialog):
+    """聊天历史记录窗口"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("聊天历史")
+        self.setFixedSize(500, 400)
+        self.setWindowFlags(
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool
+        )
+        self.setStyleSheet("""
+            QDialog {
+                background-color: rgba(30, 30, 50, 240);
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+
+        # 标题
+        title = QLabel("📜 聊天历史记录")
+        title.setStyleSheet("color: #e0e8ff; font-size: 16px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title)
+
+        # 历史列表
+        self.history_list = QListWidget()
+        self.history_list.setStyleSheet("""
+            QListWidget {
+                background-color: rgba(40, 40, 60, 200);
+                color: #e0e8ff;
+                border: none;
+                border-radius: 10px;
+                padding: 5px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid rgba(100, 150, 255, 50);
+            }
+            QListWidget::item:selected {
+                background-color: rgba(74, 111, 165, 150);
+            }
+            QScrollBar:vertical {
+                background: rgba(50, 50, 70, 150);
+                width: 8px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(100, 150, 255, 150);
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(self.history_list)
+
+        # 按钮区
+        btn_layout = QHBoxLayout()
+
+        clear_btn = QPushButton("🗑️ 清空历史")
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8a4a4a;
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #aa5a5a; }
+        """)
+        clear_btn.clicked.connect(self._clear_history)
+        btn_layout.addWidget(clear_btn)
+
+        close_btn = QPushButton("关闭")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a6fa5;
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #5a8fd5; }
+        """)
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+        self._load_history()
+
+    def _load_history(self):
+        """加载并显示历史记录"""
+        self.history_list.clear()
+        history = load_history()
+
+        for entry in reversed(history):  # 最新的在前
+            time_str = entry.get("time", "")
+            user_msg = entry.get("user", "")
+            ai_msg = entry.get("ai", "")
+
+            item_text = f"🕐 {time_str}\n👤 {user_msg}\n🤖 {ai_msg}"
+            item = QListWidgetItem(item_text)
+            self.history_list.addItem(item)
+
+    def _clear_history(self):
+        """清空历史记录"""
+        save_history([])
+        self.history_list.clear()
 
 
 class ChatBubble(QWidget):
@@ -63,11 +204,11 @@ class ChatBubble(QWidget):
 
         # Window settings
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedWidth(380)
 
         # Layout
@@ -362,7 +503,9 @@ class ChatBubble(QWidget):
         context = self.parent_pet.get_context()
         context_info = f"\n当前状态：{context}" if context else ""
 
-        system_prompt = f"""你是可爱的桌面宠物助手Io。
+        system_prompt = f"""你是可爱的桌面宠物助手Io，连接着LocalAgent系统。
+你的能力：浏览器控制、网页搜索、文件读写、执行命令、窗口控制、OCR识别。
+用户请求操作时，生成相应的Python代码来完成任务。
 回复简短（50字以内），轻松可爱。{context_info}"""
 
         answer = None
@@ -411,6 +554,18 @@ class ChatBubble(QWidget):
 
         # 发送结果
         if answer:
+            # 保存到历史记录
+            history = load_history()
+            history.append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "user": prompt,
+                "ai": answer[:200]  # 只保存前200字符
+            })
+            # 只保留最近100条
+            if len(history) > 100:
+                history = history[-100:]
+            save_history(history)
+
             if pending_code and mode == "agent":
                 # Agent 想执行代码 → 显示确认 UI
                 self.code_confirm_ready.emit(answer, pending_code)
@@ -455,11 +610,11 @@ class IoPet(QWidget):
 
         # Make window frameless and transparent
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool  # Hides from taskbar
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool  # Hides from taskbar
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TranslucentBackground)
 
         # Orb properties
         self.base_radius = 30
@@ -497,7 +652,7 @@ class IoPet(QWidget):
 
     def animate(self):
         """Update animation state"""
-        self.breath_phase += 0.07  # ~3 seconds per breath cycle at 30fps
+        self.breath_phase += 0.07
         if self.breath_phase > 2 * math.pi:
             self.breath_phase = 0
         # Radius oscillates ±20% for visible breathing effect
@@ -507,23 +662,50 @@ class IoPet(QWidget):
 
     def _update_activity(self):
         """Track current active window (跨平台)"""
-        if not HAS_WIN32:
-            # Linux: 暂不支持窗口追踪，留空
-            return
+        if HAS_WIN32:
+            # Windows: 使用 win32gui
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                if hwnd:
+                    self.current_title = win32gui.GetWindowText(hwnd)
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    try:
+                        process = psutil.Process(pid)
+                        self.current_app = process.name()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        self.current_app = "Unknown"
+            except Exception:
+                pass
+        elif HAS_LINUX:
+            # Linux: 使用 xdotool
+            try:
+                # 获取当前活动窗口 ID
+                window_id = subprocess.check_output(
+                    ['xdotool', 'getactivewindow'],
+                    stderr=subprocess.DEVNULL
+                ).decode().strip()
 
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            if hwnd:
-                self.current_title = win32gui.GetWindowText(hwnd)
-                # Get process name
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                try:
-                    process = psutil.Process(pid)
-                    self.current_app = process.name()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    self.current_app = "Unknown"
-        except Exception:
-            pass  # Silently ignore errors
+                if window_id:
+                    # 获取窗口标题
+                    self.current_title = subprocess.check_output(
+                        ['xdotool', 'getwindowname', window_id],
+                        stderr=subprocess.DEVNULL
+                    ).decode().strip()
+
+                    # 获取进程 PID
+                    pid_str = subprocess.check_output(
+                        ['xdotool', 'getwindowpid', window_id],
+                        stderr=subprocess.DEVNULL
+                    ).decode().strip()
+
+                    if pid_str:
+                        try:
+                            process = psutil.Process(int(pid_str))
+                            self.current_app = process.name()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            self.current_app = "Unknown"
+            except Exception:
+                pass  # Silently ignore errors
 
     def get_context(self):
         """Get current activity context for LLM"""
@@ -537,7 +719,7 @@ class IoPet(QWidget):
     def paintEvent(self, event):
         """Draw the glowing orb"""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing)
 
         center = QPointF(self.width() / 2, self.height() / 2)
 
@@ -546,7 +728,7 @@ class IoPet(QWidget):
         outer_gradient.setColorAt(0, self.outer_glow)
         outer_gradient.setColorAt(1, QColor(0, 0, 0, 0))
         painter.setBrush(outer_gradient)
-        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setPen(Qt.NoPen)
         painter.drawEllipse(center, self.current_radius * 2, self.current_radius * 2)
 
         # Draw middle glow
@@ -566,22 +748,22 @@ class IoPet(QWidget):
 
     def mousePressEvent(self, event):
         """Start dragging"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        if event.button() == Qt.LeftButton:
+            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
             self.is_dragging = False
 
     def mouseMoveEvent(self, event):
         """Handle dragging"""
         if self.drag_position is not None:
             self.is_dragging = True
-            self.move(event.globalPosition().toPoint() - self.drag_position)
+            self.move(event.globalPos() - self.drag_position)
             # Update bubble position if visible
             if self.chat_bubble.isVisible():
                 self.chat_bubble.position_above_pet()
 
     def mouseReleaseEvent(self, event):
         """Handle click (if not dragging) or stop dragging"""
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.LeftButton:
             if not self.is_dragging:
                 # This was a click, not a drag - toggle chat bubble
                 self.toggle_chat()
@@ -598,39 +780,64 @@ class IoPet(QWidget):
             self.chat_bubble.input_field.setFocus()
 
     def _get_startup_path(self):
-        """Get the path to the startup folder shortcut"""
-        startup_folder = os.path.join(
-            os.environ["APPDATA"],
-            "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
-        )
-        return os.path.join(startup_folder, "IoPet.vbs")
+        """Get the path to the startup file (跨平台)"""
+        if sys.platform == 'win32':
+            startup_folder = os.path.join(
+                os.environ["APPDATA"],
+                "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
+            )
+            return os.path.join(startup_folder, "IoPet.vbs")
+        else:
+            # Linux: ~/.config/autostart/
+            autostart_dir = os.path.expanduser("~/.config/autostart")
+            os.makedirs(autostart_dir, exist_ok=True)
+            return os.path.join(autostart_dir, "iopet.desktop")
 
     def _is_autostart_enabled(self):
         """Check if autostart is enabled"""
         return os.path.exists(self._get_startup_path())
 
     def _toggle_autostart(self):
-        """Enable or disable autostart"""
+        """Enable or disable autostart (跨平台)"""
         startup_file = self._get_startup_path()
 
         if self._is_autostart_enabled():
             # Remove autostart
             os.remove(startup_file)
         else:
-            # Create autostart script
-            # Detect if running as exe or py
-            if getattr(sys, 'frozen', False):
-                # Running as compiled exe
-                exe_path = sys.executable
-                script = f'CreateObject("WScript.Shell").Run """{exe_path}""", 0, False'
+            if sys.platform == 'win32':
+                # Windows: Create VBS script
+                if getattr(sys, 'frozen', False):
+                    exe_path = sys.executable
+                    script = f'CreateObject("WScript.Shell").Run """{exe_path}""", 0, False'
+                else:
+                    script_path = os.path.abspath(__file__)
+                    pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+                    script = f'CreateObject("WScript.Shell").Run """{pythonw}"" ""{script_path}""", 0, False'
+                with open(startup_file, "w", encoding="utf-8") as f:
+                    f.write(script)
             else:
-                # Running as python script
+                # Linux: Create .desktop file
                 script_path = os.path.abspath(__file__)
-                pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-                script = f'CreateObject("WScript.Shell").Run """{pythonw}"" ""{script_path}""", 0, False'
+                python_path = sys.executable
+                desktop_content = f"""[Desktop Entry]
+Type=Application
+Name=IoPet
+Comment=Desktop Pet Companion
+Exec={python_path} {script_path}
+Icon=applications-games
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+"""
+                with open(startup_file, "w", encoding="utf-8") as f:
+                    f.write(desktop_content)
 
-            with open(startup_file, "w", encoding="utf-8") as f:
-                f.write(script)
+    def _show_history(self):
+        """显示聊天历史窗口"""
+        history_window = HistoryWindow(self)
+        history_window.exec_()
 
     def contextMenuEvent(self, event):
         """Right-click menu"""
@@ -648,15 +855,21 @@ class IoPet(QWidget):
             }
         """)
 
+        # History
+        history_action = menu.addAction("📜 查看历史")
+        menu.addSeparator()
+
         # Autostart toggle
         autostart_text = "✓ 开机自启" if self._is_autostart_enabled() else "开机自启"
         autostart_action = menu.addAction(autostart_text)
         menu.addSeparator()
         quit_action = menu.addAction("退出 Io")
 
-        action = menu.exec(event.globalPos())
+        action = menu.exec_(event.globalPos())
 
-        if action == autostart_action:
+        if action == history_action:
+            self._show_history()
+        elif action == autostart_action:
             self._toggle_autostart()
         elif action == quit_action:
             self.chat_bubble.close()
@@ -667,7 +880,7 @@ def main():
     app = QApplication(sys.argv)
     pet = IoPet()
     pet.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
 
 
 if __name__ == "__main__":
