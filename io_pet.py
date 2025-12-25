@@ -22,24 +22,11 @@ import os
 import math
 import threading
 import requests
-import psutil
 import json
 from datetime import datetime
 
-# 跨平台：Windows 窗口 API / Linux xdotool
-if sys.platform == 'win32':
-    import win32gui
-    import win32process
-    HAS_WIN32 = True
-    HAS_LINUX = False
-elif sys.platform == 'linux':
-    import subprocess
-    import shutil
-    HAS_WIN32 = False
-    HAS_LINUX = shutil.which('xdotool') is not None
-else:
-    HAS_WIN32 = False
-    HAS_LINUX = False
+# 窗口追踪通过 LocalAgent API 实现（跨平台）
+# 不再需要 pywin32 或 xdotool
 
 # Voice module (optional)
 try:
@@ -661,51 +648,16 @@ class IoPet(QWidget):
         self.update()  # Trigger repaint
 
     def _update_activity(self):
-        """Track current active window (跨平台)"""
-        if HAS_WIN32:
-            # Windows: 使用 win32gui
-            try:
-                hwnd = win32gui.GetForegroundWindow()
-                if hwnd:
-                    self.current_title = win32gui.GetWindowText(hwnd)
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    try:
-                        process = psutil.Process(pid)
-                        self.current_app = process.name()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        self.current_app = "Unknown"
-            except Exception:
-                pass
-        elif HAS_LINUX:
-            # Linux: 使用 xdotool
-            try:
-                # 获取当前活动窗口 ID
-                window_id = subprocess.check_output(
-                    ['xdotool', 'getactivewindow'],
-                    stderr=subprocess.DEVNULL
-                ).decode().strip()
-
-                if window_id:
-                    # 获取窗口标题
-                    self.current_title = subprocess.check_output(
-                        ['xdotool', 'getwindowname', window_id],
-                        stderr=subprocess.DEVNULL
-                    ).decode().strip()
-
-                    # 获取进程 PID
-                    pid_str = subprocess.check_output(
-                        ['xdotool', 'getwindowpid', window_id],
-                        stderr=subprocess.DEVNULL
-                    ).decode().strip()
-
-                    if pid_str:
-                        try:
-                            process = psutil.Process(int(pid_str))
-                            self.current_app = process.name()
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            self.current_app = "Unknown"
-            except Exception:
-                pass  # Silently ignore errors
+        """Track current active window (通过 LocalAgent API)"""
+        try:
+            response = requests.get("http://localhost:8000/context", timeout=1)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success"):
+                    self.current_title = data.get("title", "")
+                    self.current_app = data.get("app", "")
+        except Exception:
+            pass  # LocalAgent 未运行时静默忽略
 
     def get_context(self):
         """Get current activity context for LLM"""
